@@ -23,62 +23,53 @@ def _clean(s: Optional[str]) -> Optional[str]:
 
 def _read_supabase_credentials():
     """
-    가능한 모든 경로/키 이름을 다 훑어서 URL/KEY를 찾아옵니다.
-    우선순위: Streamlit secrets > 환경변수 > .env
-    지원 키 (섹션/플랫, 대소문자 혼용):
-    - SUPABASE_URL / SUPABASE_KEY
-    - [supabase].url
-    - [supabase].service_role_key | service_role | key | anon_key | anon
+    1) Streamlit secrets: [supabase].url + (service_role_key | key | anon_key)
+    2) Flat secrets      : SUPABASE_URL / SUPABASE_KEY
+    3) 환경변수          : SUPABASE_URL / SUPABASE_(SERVICE_ROLE_KEY|KEY|ANON_KEY)
     """
     url = None
     key = None
 
-    # 1) Streamlit secrets
+    # 1) 섹션 방식(가장 확실) - 지금 스크린샷 구성과 동일
     try:
         import streamlit as st
-        # flat
-        url = st.secrets.get("SUPABASE_URL", url)
-        key = st.secrets.get("SUPABASE_KEY", key)
-
-        # nested (여러 이름 지원)
         if "supabase" in st.secrets:
             bag = st.secrets["supabase"]
-            url = bag.get("url", url) or bag.get("URL", url)
+            url = (bag.get("url") or bag.get("URL") or "").strip().rstrip("/")
             key = (
                 bag.get("service_role_key")
-                or bag.get("service_role")
-                or bag.get("SERVICE_ROLE_KEY")
-                or bag.get("SERVICE_ROLE")
                 or bag.get("key")
-                or bag.get("KEY")
                 or bag.get("anon_key")
+                or bag.get("SERVICE_ROLE_KEY")
+                or bag.get("KEY")
                 or bag.get("ANON_KEY")
-                or bag.get("anon")
-                or bag.get("ANON")
-                or key
-            )
+                or ""
+            ).strip()
     except Exception:
         pass
 
-    # 2) 환경변수 (대소문자/복수명 지원)
-    url = os.getenv("SUPABASE_URL", url) or os.getenv("supabase_url", url)
-    key = (
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_KEY")
-        or os.getenv("SUPABASE_ANON_KEY")
-        or os.getenv("supabase_service_role_key")
-        or os.getenv("supabase_key")
-        or os.getenv("supabase_anon_key")
-        or key
-    )
+    # 2) flat secrets (있으면 보강)
+    if not url or not key:
+        try:
+            import streamlit as st
+            url = (url or st.secrets.get("SUPABASE_URL", "")).strip().rstrip("/")
+            key = (key or st.secrets.get("SUPABASE_KEY", "")).strip()
+        except Exception:
+            pass
 
-    # sanitize
-    url = _clean(url)
-    key = _clean(key)
-    if url:
-        url = url.rstrip("/")  # trailing slash 제거
+    # 3) 환경변수 fallback
+    if not url:
+        url = (os.getenv("SUPABASE_URL", "") or os.getenv("supabase_url", "")).strip().rstrip("/")
+    if not key:
+        key = (
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+            or os.getenv("SUPABASE_KEY")
+            or os.getenv("SUPABASE_ANON_KEY")
+            or ""
+        ).strip()
 
-    return url, key
+    return (url or None), (key or None)
+
 
 
 # ==================== 내부 유틸 ====================
@@ -331,6 +322,7 @@ def test_connection() -> bool:
 
 if __name__ == "__main__":
     test_connection()
+
 
 
 
