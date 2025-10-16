@@ -1,3 +1,4 @@
+# === MAIN (1/4) – Supabase 전환 호환 패치 ===
 import streamlit as st
 import os
 import pandas as pd
@@ -78,12 +79,11 @@ def login_page():
         password = st.text_input("비밀번호", type="password", placeholder="비밀번호를 입력하세요")
         submitted = st.form_submit_button("로그인", use_container_width=True)
         if submitted:
-            user = get_user_by_credentials(username, password)
-            
-            if not user.empty:
+            user = get_user_by_credentials(username, password)  # dict | None
+            if user:
                 st.session_state.logged_in = True
-                st.session_state.user = user.iloc[0].to_dict()
-                st.success(f"✅ {user.iloc[0]['name']}님 환영합니다!")
+                st.session_state.user = user  # 이미 dict
+                st.success(f"✅ {user.get('name','사용자')}님 환영합니다!")
                 st.rerun()
             else:
                 st.error("❌ 아이디 또는 비밀번호가 올바르지 않습니다.")
@@ -102,7 +102,7 @@ def edit_reception_dialog(reception_number, user):
         return
     row = detail.iloc[0]
 
-    st.info(f"**접수번호:** {row['reception_number']} | **등록자:** {row['registrant_name']} | **등록일:** {row['created_at']}")
+    st.info(f"**접수번호:** {row['reception_number']} | **등록자:** {row.get('registrant_name','-')} | **등록일:** {row.get('created_at','')}")
 
     # 첨부파일 표시
     apath = (row.get('attachment_path') or "").strip()
@@ -131,7 +131,7 @@ def edit_reception_dialog(reception_number, user):
                                  index=list(model_options.keys()).index(row['model_code']) if model_options and row['model_code'] in model_options else 0,
                                  format_func=lambda x: model_options.get(x, x), key="edit_model")
 
-    symptoms = select_data('symptom_code', columns='category,code,description', order_by='code.asc', to_df=True)
+    symptoms = select_data('symptom_code', columns='category,code,description', order='code.asc', to_df=True)
     symptom_categories = sorted(symptoms['category'].unique()) if not symptoms.empty else []
     e_symptom_cat = cols2[1].selectbox("증상 대분류", symptom_categories,
                                        index=symptom_categories.index(row['symptom_category']) if row['symptom_category'] in symptom_categories else 0,
@@ -180,7 +180,8 @@ def edit_reception_dialog(reception_number, user):
             'complete_date': complete_date
         }
         
-        update_data('as_reception', update_dict, 'id', int(row['id']))
+        # ✅ 래퍼 시그니처: update_data(table, match=dict, data=dict)
+        update_data('as_reception', match={'id': int(row['id'])}, data=update_dict)
         log_audit(user['id'], 'UPDATE', 'as_reception', row['id'], old_status, e_status)
         st.success("✅ 수정 완료!")
         st.rerun()
@@ -199,28 +200,36 @@ def result_registration_dialog(reception_number, user):
     st.markdown("### 📋 접수 정보")
     c1,c2,c3 = st.columns(3)
     c1.info(f"**접수번호**\n{row['reception_number']}\n**고객명**\n{row['customer_name']}")
-    c2.info(f"**모델**\n{row['model_code']}\n**증상**\n{row['symptom_description'][:20]}...")
+    c2.info(f"**모델**\n{row['model_code']}\n**증상**\n{str(row['symptom_description'])[:20]}...")
     c3.success(f"**상태**\n{row['status']}")
 
     payment_type = row['payment_type'] or ""
     
     # 실제 증상 수정 기능
     st.markdown("### 🩺 실제 증상 (현장 확인 후)")
-    symptoms = select_data('symptom_code', columns='category,code,description', order_by='code.asc', to_df=True)
+    symptoms = select_data('symptom_code', columns='category,code,description', order='code.asc', to_df=True)
     symptom_categories = sorted(symptoms['category'].unique()) if not symptoms.empty else []
     
     cols_symptom = st.columns(2)
-    actual_symptom_cat = cols_symptom[0].selectbox("실제 증상 대분류*", symptom_categories,
+    actual_symptom_cat = cols_symptom[0].selectbox(
+        "실제 증상 대분류*",
+        symptom_categories,
         index=symptom_categories.index(row['symptom_category']) if row['symptom_category'] in symptom_categories else 0,
-        key="actual_symptom_cat")
+        key="actual_symptom_cat"
+    )
     
     filtered_symptoms = symptoms[symptoms['category'] == actual_symptom_cat] if not symptoms.empty else pd.DataFrame()
     symptom_options = dict(zip(filtered_symptoms['code'], filtered_symptoms['description'])) if not filtered_symptoms.empty else {}
     
     if symptom_options:
-        actual_symptom_code = cols_symptom[1].selectbox("실제 증상 상세*", list(symptom_options.keys()),
-            index=list(symptom_options.keys()).index(row['symptom_code']) if row['symptom_code'] in symptom_options else 0,
-            format_func=lambda x: f"{x} - {symptom_options[x]}", key="actual_symptom_code")
+        default_code = row['symptom_code'] if row['symptom_code'] in symptom_options else (list(symptom_options.keys())[0] if symptom_options else None)
+        actual_symptom_code = cols_symptom[1].selectbox(
+            "실제 증상 상세*",
+            list(symptom_options.keys()),
+            index=list(symptom_options.keys()).index(default_code) if default_code in symptom_options else 0,
+            format_func=lambda x: f"{x} - {symptom_options[x]}",
+            key="actual_symptom_code"
+        )
         actual_symptom_desc = symptom_options.get(actual_symptom_code, "")
     else:
         actual_symptom_code = row['symptom_code']
@@ -230,20 +239,24 @@ def result_registration_dialog(reception_number, user):
     result_text = st.text_area("처리 내용", height=100, placeholder="작업 내용 입력", key="result_text")
 
     st.markdown("**사용 자재**")
-    materials = select_data('material_code', columns='material_code,material_name,unit_price', order_by='material_code.asc', to_df=True)
+    materials = select_data('material_code', columns='material_code,material_name,unit_price', order='material_code.asc', to_df=True)
     selected_materials = []
     for i in range(5):
         cols = st.columns([3,1,2])
         if not materials.empty:
             opt = dict(zip(materials['material_code'], materials['material_name']))
-            selected_mat = cols[0].selectbox(f"자재 {i+1}", ["선택안함"] + list(opt.keys()),
-                                             format_func=lambda x: opt.get(x, x), key=f"result_mat_{i}")
+            selected_mat = cols[0].selectbox(
+                f"자재 {i+1}",
+                ["선택안함"] + list(opt.keys()),
+                format_func=lambda x: opt.get(x, x),
+                key=f"result_mat_{i}"
+            )
             if selected_mat != "선택안함":
                 qty = cols[1].number_input("수량", min_value=1, value=1, key=f"result_qty_{i}")
                 wholesale_price = materials.loc[materials['material_code']==selected_mat, 'unit_price'].values[0]
                 display_price = 0 if payment_type in ("무상","출장비유상/부품비무상") else wholesale_price
                 cols[2].metric("단가", f"{display_price:,.0f}원")
-                selected_materials.append({"code": selected_mat, "name": opt[selected_mat], "qty": qty, "price": display_price})
+                selected_materials.append({"code": selected_mat, "name": opt[selected_mat], "qty": int(qty), "price": int(display_price)})
 
     if selected_materials:
         total_material_cost = sum(m["price"]*m["qty"] for m in selected_materials)
@@ -263,15 +276,16 @@ def result_registration_dialog(reception_number, user):
                 'technician_id': user['id'],
                 'technician_name': user['name'],
                 'result': result_text,
-                'labor_cost': labor_cost,
+                'labor_cost': int(labor_cost),
                 'labor_reason': None if labor_reason=="선택안함" else labor_reason,
                 'actual_symptom_category': actual_symptom_cat,
                 'actual_symptom_code': actual_symptom_code,
                 'actual_symptom_description': actual_symptom_desc,
                 'completed_at': str(date.today())
             }
-            result_id = insert_data('as_result', result_data)
-            
+            res = insert_data('as_result', result_data)
+            result_id = (res or {}).get('id')
+
             for m in selected_materials:
                 material_data = {
                     'reception_id': int(row['id']),
@@ -282,9 +296,9 @@ def result_registration_dialog(reception_number, user):
                 }
                 insert_data('as_material_usage', material_data)
             
-            update_data('as_reception', {'status': '검수완료', 'complete_date': str(date.today())}, 'id', int(row['id']))
+            update_data('as_reception', match={'id': int(row['id'])}, data={'status': '검수완료', 'complete_date': str(date.today())})
             
-            log_audit(user['id'], 'INSERT', 'as_result', result_id, '', reception_number)
+            log_audit(user['id'], 'INSERT', 'as_result', result_id or 0, '', reception_number)
             st.success("✅ 저장 완료!")
             st.balloons()
             st.rerun()
@@ -410,7 +424,7 @@ def page_dashboard(user, role, branch_id):
         'as_reception',
         columns='reception_number,customer_name,phone,model_code,symptom_code,symptom_description,branch_name,registrant_name,status,request_date',
         filters=filters,
-        order_by='created_at.desc',
+        order='created_at.desc',
         limit=10,
         to_df=True
     )
@@ -422,7 +436,8 @@ def page_dashboard(user, role, branch_id):
             cols[1].write(row['customer_name'])
             cols[2].write(row['phone'])
             cols[3].write(row['model_code'])
-            cols[4].write(row['symptom_description'][:30] + "..." if len(str(row['symptom_description'])) > 30 else row['symptom_description'])
+            desc = str(row['symptom_description']) if row['symptom_description'] is not None else ""
+            cols[4].write(desc[:30] + "..." if len(desc) > 30 else desc)
             cols[5].write(row['branch_name'])
             status = row['status']
             if status == '접수':
@@ -441,7 +456,7 @@ def page_reception_register(user):
 
     branches = select_data('branch', columns='id,branch_name', to_df=True)
     models   = select_data('product_model', columns='model_code,model_name', to_df=True)
-    symptoms = select_data('symptom_code', columns='category,code,description', order_by='code.asc', to_df=True)
+    symptoms = select_data('symptom_code', columns='category,code,description', order='code.asc', to_df=True)
 
     sorted_categories = sorted(symptoms['category'].unique()) if not symptoms.empty else []
 
@@ -550,8 +565,9 @@ def page_reception_register(user):
                     'attachment_path': attachment_path if attachment_path else None
                 }
                 
-                rid = insert_data('as_reception', reception_data)
-                log_audit(user['id'], 'INSERT', 'as_reception', rid, '', reception_number)
+                res = insert_data('as_reception', reception_data)
+                rid = (res or {}).get('id')
+                log_audit(user['id'], 'INSERT', 'as_reception', rid or 0, '', reception_number)
                 
                 if branch_phone_value:
                     send_sms_notification(branch_phone_value, f"[AS접수] {reception_number}")
@@ -578,11 +594,13 @@ def page_reception_list(user, role, branch_id):
     if status_filter != "전체":
         filters['status'] = status_filter
     
-    all_data = select_data('as_reception', 
-                          columns='reception_number,customer_name,phone,model_code,symptom_code,symptom_description,branch_name,status,request_date',
-                          filters=filters,
-                          order_by='created_at.desc',
-                          to_df=True)
+    all_data = select_data(
+        'as_reception', 
+        columns='reception_number,customer_name,phone,model_code,symptom_code,symptom_description,branch_name,status,request_date',
+        filters=filters,
+        order=('created_at','desc'),
+        to_df=True
+    )
     
     if search_keyword and not all_data.empty:
         mask = (all_data['customer_name'].str.contains(search_keyword, na=False) | 
@@ -594,7 +612,7 @@ def page_reception_list(user, role, branch_id):
     if not all_data.empty:
         excel_data = download_excel(all_data)
         st.download_button("📥 엑셀", excel_data, file_name=f"접수내역_{date.today()}.xlsx",
-                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         
         for _, row in all_data.head(50).iterrows():
             cols = st.columns([1, 1, 1.2, 1, 2, 1, 0.8, 1, 0.5])
@@ -623,19 +641,23 @@ def page_result_register(user, role, branch_id):
     
     filters = {} if role == '관리자' else {'branch_id': branch_id}
     
-    pending_waiting = select_data('as_reception', 
-                                 columns='id,reception_number,customer_name,phone,model_code,symptom_description,payment_type',
-                                 filters={**filters, 'status': '접수'},
-                                 order_by='request_date.asc',
-                                 limit=20,
-                                 to_df=True)
+    pending_waiting = select_data(
+        'as_reception', 
+        columns='id,reception_number,customer_name,phone,model_code,symptom_description,payment_type',
+        filters={**filters, 'status': '접수'},
+        order=('request_date','asc'),
+        limit=20,
+        to_df=True
+    )
     
-    pending_complete = select_data('as_reception', 
-                                  columns='id,reception_number,customer_name,phone,model_code,symptom_description,payment_type',
-                                  filters={**filters, 'status': '완료'},
-                                  order_by='request_date.asc',
-                                  limit=20,
-                                  to_df=True)
+    pending_complete = select_data(
+        'as_reception', 
+        columns='id,reception_number,customer_name,phone,model_code,symptom_description,payment_type',
+        filters={**filters, 'status': '완료'},
+        order=('request_date','asc'),
+        limit=20,
+        to_df=True
+    )
     
     pending_df = pd.concat([pending_waiting, pending_complete], ignore_index=True) if not pending_waiting.empty or not pending_complete.empty else pd.DataFrame()
     
@@ -659,7 +681,7 @@ def page_branch_manage():
     tab1, tab2 = st.tabs(["📋 지점 목록", "➕ 지점 추가"])
     
     with tab1:
-        df = select_data('branch', order_by='branch_code.asc', to_df=True)
+        df = select_data('branch', order=('branch_code','asc'), to_df=True)
         if not df.empty:
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
@@ -702,11 +724,13 @@ def page_inventory_manage(user, role, branch_id):
     with tab1:
         st.subheader("현재 재고 현황")
         filters = {} if role == '관리자' else {'branch_id': branch_id}
-        inventory = select_data('inventory', 
-                               columns='material_code,material_name,branch_name,quantity',
-                               filters=filters,
-                               order_by='material_code.asc',
-                               to_df=True)
+        inventory = select_data(
+            'inventory', 
+            columns='id,material_code,material_name,branch_id,branch_name,quantity',
+            filters=filters,
+            order=('material_code','asc'),
+            to_df=True
+        )
         
         if not inventory.empty:
             st.dataframe(inventory, use_container_width=True, hide_index=True)
@@ -721,8 +745,11 @@ def page_inventory_manage(user, role, branch_id):
             materials = select_data('material_code', columns='material_code,material_name', to_df=True)
             material_options = dict(zip(materials['material_code'], materials['material_name'])) if not materials.empty else {}
             
-            selected_material = cols[0].selectbox("자재*", list(material_options.keys()) if material_options else [],
-                                                 format_func=lambda x: f"{x} - {material_options.get(x, x)}")
+            selected_material = cols[0].selectbox(
+                "자재*", 
+                list(material_options.keys()) if material_options else [],
+                format_func=lambda x: f"{x} - {material_options.get(x, x)}"
+            )
             
             transaction_type = cols[1].selectbox("거래 유형*", ["입고", "출고"])
             quantity = cols[2].number_input("수량*", min_value=1, value=1)
@@ -730,8 +757,11 @@ def page_inventory_manage(user, role, branch_id):
             if role == '관리자':
                 branches = select_data('branch', columns='id,branch_name', to_df=True)
                 branch_options = dict(zip(branches['id'], branches['branch_name'])) if not branches.empty else {}
-                selected_branch = st.selectbox("지점*", list(branch_options.keys()) if branch_options else [],
-                                              format_func=lambda x: branch_options.get(x, str(x)))
+                selected_branch = st.selectbox(
+                    "지점*", 
+                    list(branch_options.keys()) if branch_options else [],
+                    format_func=lambda x: branch_options.get(x, str(x))
+                )
             else:
                 selected_branch = branch_id
                 st.info(f"지점: {user.get('branch_name', '미지정')}")
@@ -742,9 +772,11 @@ def page_inventory_manage(user, role, branch_id):
                 if selected_material and selected_branch:
                     try:
                         # 재고 조회
-                        current_inventory = select_data('inventory',
-                                                       columns='id,quantity',
-                                                       filters={'material_code': selected_material, 'branch_id': selected_branch})
+                        current_inventory = select_data(
+                            'inventory',
+                            columns='id,quantity',
+                            filters={'material_code': selected_material, 'branch_id': selected_branch}
+                        )
                         
                         if transaction_type == "입고":
                             new_quantity = (current_inventory[0]['quantity'] if current_inventory else 0) + quantity
@@ -757,7 +789,7 @@ def page_inventory_manage(user, role, branch_id):
                         
                         # 재고 업데이트
                         if current_inventory:
-                            update_data('inventory', {'quantity': new_quantity}, 'id', current_inventory[0]['id'])
+                            update_data('inventory', match={'id': current_inventory[0]['id']}, data={'quantity': new_quantity})
                         else:
                             branch_data = select_data('branch', columns='branch_name', filters={'id': selected_branch})
                             branch_name = branch_data[0]['branch_name'] if branch_data else ""
@@ -795,10 +827,12 @@ def page_material_code_manage():
     tab1, tab2 = st.tabs(["📋 자재 목록", "➕ 자재 추가/수정"])
     
     with tab1:
-        materials = select_data('material_code', 
-                               columns='material_code,material_name,unit_price',
-                               order_by='material_code.asc',
-                               to_df=True)
+        materials = select_data(
+            'material_code', 
+            columns='material_code,material_name,unit_price',
+            order=('material_code','asc'),
+            to_df=True
+        )
         
         if materials.empty:
             st.info("등록된 자재가 없습니다.")
@@ -819,7 +853,8 @@ def page_material_code_manage():
                 else:
                     exists = select_data('material_code', columns='id', filters={'material_code': code})
                     if exists:
-                        update_data('material_code', {'material_name': name, 'unit_price': int(price)}, 'material_code', code)
+                        # ✅ 래퍼 시그니처: update_data(table, match=dict, data=dict)
+                        update_data('material_code', match={'material_code': code}, data={'material_name': name, 'unit_price': int(price)})
                         st.success("✅ 수정되었습니다.")
                     else:
                         insert_data('material_code', {'material_code': code, 'material_name': name, 'unit_price': int(price)})
@@ -839,20 +874,26 @@ def page_labor_cost_manage():
         date_to = cols[1].date_input("종료일", value=date.today())
         
         # as_result에서 인건비 데이터 조회
-        results = select_data('as_result',
-                             columns='technician_name,labor_cost,labor_reason,completed_at',
-                             filters={
-                                 'completed_at__gte': str(date_from),
-                                 'completed_at__lte': str(date_to)
-                             },
-                             to_df=True)
+        results = select_data(
+            'as_result',
+            columns='technician_name,labor_cost,labor_reason,completed_at',
+            filters={
+                'completed_at__gte': str(date_from),
+                'completed_at__lte': str(date_to)
+            },
+            to_df=True
+        )
         
         if not results.empty:
+            # 숫자형 안정화
+            if 'labor_cost' in results.columns:
+                results['labor_cost'] = pd.to_numeric(results['labor_cost'], errors='coerce').fillna(0).astype(int)
+
             total_labor = results['labor_cost'].sum()
             st.metric("총 인건비", f"{total_labor:,.0f}원")
             
             # 기사별 집계
-            tech_stats = results.groupby('technician_name')['labor_cost'].agg(['sum', 'count']).reset_index()
+            tech_stats = results.groupby('technician_name', dropna=False)['labor_cost'].agg(['sum', 'count']).reset_index()
             tech_stats.columns = ['기사명', '총 인건비', '건수']
             st.dataframe(tech_stats, use_container_width=True, hide_index=True)
             
@@ -871,29 +912,50 @@ def page_labor_cost_manage():
         date_from2 = cols[0].date_input("시작일", value=date.today() - timedelta(days=7), key="labor_detail_from")
         date_to2 = cols[1].date_input("종료일", value=date.today(), key="labor_detail_to")
         
-        # 상세 내역 조회 (reception_id로 접수정보 조인 필요)
-        results_detail = select_data('as_result',
-                                     columns='reception_id,technician_name,labor_cost,labor_reason,completed_at',
-                                     filters={
-                                         'completed_at__gte': str(date_from2),
-                                         'completed_at__lte': str(date_to2)
-                                     },
-                                     order_by='completed_at.desc',
-                                     to_df=True)
+        # 상세 내역 조회 (reception_id로 접수정보 조인 → 배치 조회로 N+1 제거)
+        results_detail = select_data(
+            'as_result',
+            columns='reception_id,technician_name,labor_cost,labor_reason,completed_at',
+            filters={
+                'completed_at__gte': str(date_from2),
+                'completed_at__lte': str(date_to2)
+            },
+            order=('completed_at','desc'),
+            to_df=True
+        )
         
         if not results_detail.empty:
-            # reception_id로 접수번호 조회
+            # 숫자형 안정화
+            results_detail['labor_cost'] = pd.to_numeric(results_detail['labor_cost'], errors='coerce').fillna(0).astype(int)
+
+            # ✅ reception_id 배치 조회
+            rec_ids = sorted(set(int(r) for r in results_detail['reception_id'].dropna().tolist()))
+            rec_map = {}
+            if rec_ids:
+                # Supabase in 연산자 사용
+                rec_rows = select_data(
+                    'as_reception',
+                    columns='id,reception_number,customer_name',
+                    filters={'id': ('in', rec_ids)}
+                )
+                rec_map = {r['id']: r for r in (rec_rows or [])}
+
+            # 표 출력
+            header = st.columns([1, 1, 1, 1, 1])
+            header[0].markdown("**접수번호**")
+            header[1].markdown("**고객명**")
+            header[2].markdown("**기사명**")
+            header[3].markdown("**인건비**")
+            header[4].markdown("**사유**")
+
             for _, row in results_detail.iterrows():
-                reception = select_data('as_reception', 
-                                       columns='reception_number,customer_name',
-                                       filters={'id': int(row['reception_id'])})
-                
+                rec = rec_map.get(int(row['reception_id'])) if pd.notna(row['reception_id']) else None
                 cols = st.columns([1, 1, 1, 1, 1])
-                cols[0].write(reception[0]['reception_number'] if reception else "-")
-                cols[1].write(reception[0]['customer_name'] if reception else "-")
-                cols[2].write(row['technician_name'])
-                cols[3].write(f"{row['labor_cost']:,.0f}원")
-                cols[4].write(row['labor_reason'] or "-")
+                cols[0].write(rec['reception_number'] if rec else "-")
+                cols[1].write(rec['customer_name'] if rec else "-")
+                cols[2].write(row.get('technician_name', '-'))
+                cols[3].write(f"{int(row['labor_cost']):,}원")
+                cols[4].write(row.get('labor_reason') or "-")
         else:
             st.info("해당 기간의 내역이 없습니다.")
 
@@ -916,21 +978,21 @@ def page_quality_stats(role, branch_id):
         if role != '관리자':
             filters['branch_id'] = branch_id
         
-        receptions = select_data('as_reception',
-                                columns='symptom_category,symptom_code,symptom_description',
-                                filters=filters,
-                                to_df=True)
+        receptions = select_data(
+            'as_reception',
+            columns='symptom_category,symptom_code,symptom_description',
+            filters=filters,
+            to_df=True
+        )
         
         if not receptions.empty:
-            # 대분류별 집계
-            cat_stats = receptions.groupby('symptom_category').size().reset_index(name='건수')
+            cat_stats = receptions.groupby('symptom_category', dropna=False).size().reset_index(name='건수')
             cat_stats = cat_stats.sort_values('건수', ascending=False)
             st.dataframe(cat_stats, use_container_width=True, hide_index=True)
             
             st.divider()
             
-            # 증상 코드별 집계
-            code_stats = receptions.groupby(['symptom_code', 'symptom_description']).size().reset_index(name='건수')
+            code_stats = receptions.groupby(['symptom_code', 'symptom_description'], dropna=False).size().reset_index(name='건수')
             code_stats = code_stats.sort_values('건수', ascending=False).head(20)
             code_stats.columns = ['증상코드', '증상설명', '건수']
             st.subheader("Top 20 증상")
@@ -951,10 +1013,12 @@ def page_quality_stats(role, branch_id):
         if role != '관리자':
             filters2['branch_id'] = branch_id
         
-        trend_data = select_data('as_reception',
-                                columns='request_date,status',
-                                filters=filters2,
-                                to_df=True)
+        trend_data = select_data(
+            'as_reception',
+            columns='request_date,status',
+            filters=filters2,
+            to_df=True
+        )
         
         if not trend_data.empty:
             daily_stats = trend_data.groupby('request_date').size().reset_index(name='건수')
@@ -975,30 +1039,39 @@ def page_quality_stats(role, branch_id):
         date_to3 = cols[1].date_input("종료일", value=date.today(), key="detail_to")
         
         # as_result에서 실제 증상 조회
-        results_with_symptom = select_data('as_result',
-                                          columns='reception_id,actual_symptom_category,actual_symptom_code,actual_symptom_description',
-                                          filters={
-                                              'completed_at__gte': str(date_from3),
-                                              'completed_at__lte': str(date_to3)
-                                          },
-                                          to_df=True)
+        results_with_symptom = select_data(
+            'as_result',
+            columns='reception_id,actual_symptom_category,actual_symptom_code,actual_symptom_description',
+            filters={
+                'completed_at__gte': str(date_from3),
+                'completed_at__lte': str(date_to3)
+            },
+            to_df=True
+        )
         
         if not results_with_symptom.empty and 'actual_symptom_code' in results_with_symptom.columns:
-            # 실제 증상 통계
-            actual_symptom_stats = results_with_symptom.groupby(['actual_symptom_code', 'actual_symptom_description']).size().reset_index(name='건수')
+            actual_symptom_stats = results_with_symptom.groupby(
+                ['actual_symptom_code', 'actual_symptom_description'], dropna=False
+            ).size().reset_index(name='건수')
             actual_symptom_stats = actual_symptom_stats.sort_values('건수', ascending=False).head(10)
             actual_symptom_stats.columns = ['실제 증상 코드', '설명', '건수']
             st.subheader("실제 현장 증상 Top 10")
             st.dataframe(actual_symptom_stats, use_container_width=True, hide_index=True)
             
-            # 증상 변경 사례 분석
+            # ✅ 접수증상 vs 실제증상 변경 사례 배치 비교 (N+1 제거)
+            rec_ids = sorted(set(int(r) for r in results_with_symptom['reception_id'].dropna().tolist()))
             mismatch_count = 0
-            for _, row in results_with_symptom.iterrows():
-                reception = select_data('as_reception',
-                                       columns='symptom_code',
-                                       filters={'id': int(row['reception_id'])})
-                if reception and reception[0]['symptom_code'] != row['actual_symptom_code']:
-                    mismatch_count += 1
+            if rec_ids:
+                rec_rows = select_data(
+                    'as_reception',
+                    columns='id,symptom_code',
+                    filters={'id': ('in', rec_ids)}
+                ) or []
+                rec_map = {r['id']: r.get('symptom_code') for r in rec_rows}
+                for _, r in results_with_symptom.iterrows():
+                    rid = int(r['reception_id']) if pd.notna(r['reception_id']) else None
+                    if rid and rec_map.get(rid) != r.get('actual_symptom_code'):
+                        mismatch_count += 1
             
             st.metric("증상 변경 건수", f"{mismatch_count}건")
             st.caption(f"전체 {len(results_with_symptom)}건 중 접수 시 증상과 실제 증상이 다른 경우")
@@ -1012,10 +1085,12 @@ def page_user_manage():
     tab1, tab2 = st.tabs(["📋 사용자 목록", "➕ 사용자 추가"])
     
     with tab1:
-        users = select_data('users', 
-                           columns='id,username,name,role,branch_name,is_active,created_at',
-                           order_by='id.asc',
-                           to_df=True)
+        users = select_data(
+            'users', 
+            columns='id,username,name,role,branch_name,is_active,created_at',
+            order=('id','asc'),
+            to_df=True
+        )
         
         if not users.empty:
             st.dataframe(users, use_container_width=True, hide_index=True)
@@ -1034,8 +1109,11 @@ def page_user_manage():
             
             branches = select_data('branch', columns='id,branch_name', to_df=True)
             branch_options = dict(zip(branches['id'], branches['branch_name'])) if not branches.empty else {}
-            branch_id = cols2[1].selectbox("소속 지점", [0] + list(branch_options.keys()) if branch_options else [0],
-                                          format_func=lambda x: "미지정" if x == 0 else branch_options.get(x, str(x)))
+            branch_id = cols2[1].selectbox(
+                "소속 지점", 
+                [0] + list(branch_options.keys()) if branch_options else [0],
+                format_func=lambda x: "미지정" if x == 0 else branch_options.get(x, str(x))
+            )
             
             is_active = st.checkbox("활성화", value=True)
             
@@ -1074,11 +1152,13 @@ def page_quality_inspection(user, role, branch_id):
     filters['complete_date__gte'] = str(date_from)
     filters['complete_date__lte'] = str(date_to)
     
-    inspected_data = select_data('as_reception',
-                                 columns='id,reception_number,customer_name,phone,model_code,symptom_description,complete_date',
-                                 filters=filters,
-                                 order_by='complete_date.desc',
-                                 to_df=True)
+    inspected_data = select_data(
+        'as_reception',
+        columns='id,reception_number,customer_name,phone,model_code,symptom_description,complete_date',
+        filters=filters,
+        order=('complete_date','desc'),
+        to_df=True
+    )
     
     if search_keyword and not inspected_data.empty:
         mask = (inspected_data['customer_name'].str.contains(search_keyword, na=False) | 
@@ -1090,13 +1170,16 @@ def page_quality_inspection(user, role, branch_id):
     if not inspected_data.empty:
         for _, row in inspected_data.iterrows():
             # 결과 정보 조회
-            result = select_data('as_result',
-                               columns='technician_name,result,labor_cost,completed_at',
-                               filters={'reception_id': int(row['id'])},
-                               limit=1)
+            result = select_data(
+                'as_result',
+                columns='technician_name,result,labor_cost,completed_at',
+                filters={'reception_id': int(row['id'])},
+                limit=1
+            )
             
             if tech_filter and result:
-                if tech_filter not in result[0]['technician_name']:
+                tech_name = result[0].get('technician_name') or ""
+                if tech_filter not in tech_name:
                     continue
             
             with st.container():
@@ -1108,8 +1191,14 @@ def page_quality_inspection(user, role, branch_id):
                 cols[4].write(str(row['symptom_description'])[:30])
                 
                 if result:
-                    cols[5].write(result[0]['technician_name'])
-                    cols[6].write(f"{result[0]['labor_cost']:,.0f}원")
+                    tech_name = result[0].get('technician_name') or "-"
+                    labor = result[0].get('labor_cost') or 0
+                    try:
+                        labor = int(labor)
+                    except:
+                        labor = 0
+                    cols[5].write(tech_name)
+                    cols[6].write(f"{labor:,.0f}원")
                 else:
                     cols[5].write("-")
                     cols[6].write("-")
@@ -1211,9 +1300,12 @@ def page_legacy_data(user):
     if not filtered_df.empty:
         # 엑셀 다운로드
         excel_data = download_excel(filtered_df)
-        st.download_button("📥 검색 결과 엑셀 다운로드", excel_data,
-                          file_name=f"백데이터_검색결과_{date.today()}.xlsx",
-                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button(
+            "📥 검색 결과 엑셀 다운로드",
+            excel_data,
+            file_name=f"백데이터_검색결과_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
         
         # 데이터 테이블
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
