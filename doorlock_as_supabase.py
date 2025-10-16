@@ -1,8 +1,10 @@
 # ==================== 환경/클라이언트 ====================
 import os
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 from dotenv import load_dotenv
 from supabase import create_client, Client
+import pandas as pd
+from datetime import date
 
 # .env 로딩: 현재 파일 기준(.py와 같은 폴더) + CWD 둘 다 시도
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -309,4 +311,5 @@ def test_connection() -> bool:
 
 if __name__ == "__main__":
     test_connection()
+
 
