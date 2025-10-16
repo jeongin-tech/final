@@ -11,54 +11,74 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 load_dotenv()  # fallback
 
+def _clean(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return s
+    s = str(s).strip()
+    if s.startswith('"') and s.endswith('"'):
+        s = s[1:-1].strip()
+    if s.startswith("'") and s.endswith("'"):
+        s = s[1:-1].strip()
+    return s
+
 def _read_supabase_credentials():
     """
-    자격정보 우선순위:
-    1) Streamlit secrets
-       - st.secrets["SUPABASE_URL"] / st.secrets["SUPABASE_KEY"]
-       - 또는 st.secrets["supabase"]["url"] / ["service_role_key"|"key"|"anon_key"]
-    2) 환경변수
-       - SUPABASE_URL
-       - SUPABASE_SERVICE_ROLE_KEY > SUPABASE_KEY > SUPABASE_ANON_KEY
+    가능한 모든 경로/키 이름을 다 훑어서 URL/KEY를 찾아옵니다.
+    우선순위: Streamlit secrets > 환경변수 > .env
+    지원 키 (섹션/플랫, 대소문자 혼용):
+    - SUPABASE_URL / SUPABASE_KEY
+    - [supabase].url
+    - [supabase].service_role_key | service_role | key | anon_key | anon
     """
     url = None
     key = None
 
-    # 1) Streamlit secrets (있으면 최우선)
+    # 1) Streamlit secrets
     try:
         import streamlit as st
+        # flat
         url = st.secrets.get("SUPABASE_URL", url)
         key = st.secrets.get("SUPABASE_KEY", key)
+
+        # nested (여러 이름 지원)
         if "supabase" in st.secrets:
             bag = st.secrets["supabase"]
-            url = bag.get("url", url)
-            key = bag.get("service_role_key") or bag.get("key") or bag.get("anon_key") or key
+            url = bag.get("url", url) or bag.get("URL", url)
+            key = (
+                bag.get("service_role_key")
+                or bag.get("service_role")
+                or bag.get("SERVICE_ROLE_KEY")
+                or bag.get("SERVICE_ROLE")
+                or bag.get("key")
+                or bag.get("KEY")
+                or bag.get("anon_key")
+                or bag.get("ANON_KEY")
+                or bag.get("anon")
+                or bag.get("ANON")
+                or key
+            )
     except Exception:
-        # streamlit이 아닌 환경일 수도 있음
         pass
 
-    # 2) 환경변수
-    url = os.getenv("SUPABASE_URL", url)
+    # 2) 환경변수 (대소문자/복수명 지원)
+    url = os.getenv("SUPABASE_URL", url) or os.getenv("supabase_url", url)
     key = (
         os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         or os.getenv("SUPABASE_KEY")
         or os.getenv("SUPABASE_ANON_KEY")
+        or os.getenv("supabase_service_role_key")
+        or os.getenv("supabase_key")
+        or os.getenv("supabase_anon_key")
         or key
     )
+
+    # sanitize
+    url = _clean(url)
+    key = _clean(key)
+    if url:
+        url = url.rstrip("/")  # trailing slash 제거
+
     return url, key
-
-SUPABASE_URL, SUPABASE_KEY = _read_supabase_credentials()
-
-def _build_client(url: Optional[str], key: Optional[str]) -> Optional[Client]:
-    if not url or not key:
-        return None  # ❌ 바로 예외 던지지 않음 (test_connection에서 처리)
-    try:
-        return create_client(url, key)
-    except Exception:
-        return None
-
-# ✅ 자격정보 없으면 None. 연결 확인은 앱 시작 시 test_connection()에서!
-supabase: Optional[Client] = _build_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ==================== 내부 유틸 ====================
@@ -311,5 +331,6 @@ def test_connection() -> bool:
 
 if __name__ == "__main__":
     test_connection()
+
 
 
