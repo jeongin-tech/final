@@ -15,6 +15,7 @@ if not os.path.exists("uploads"):
 
 # ==================== Supabase 연동 ====================
 from doorlock_as_supabase import (
+    supabase, 
     select_data,
     insert_data,
     update_data,
